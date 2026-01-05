@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-#    TTL & Web Enum Scanner :: by 0xAlienSec
-#    v2.8 Hunter Edition
+#   TTL & Web Enum Scanner :: by 0xAlienSec
+#   v2.8 Hunter Edition
 #
 set -euo pipefail
 
@@ -162,13 +162,25 @@ leer_ip_objetivo() {
     fi
 
     echo -e "${C_BLU}[*] Comprobando conectividad (ping)...${C_RST}"
-    if ! ping -c 1 -W 1 "${TARGET_IP}" >/dev/null 2>&1; then
-        echo -e "${C_RED}[!] La máquina (${TARGET_IP}) NO responde a ping.${C_RST}"
-        echo -e "${C_YEL}[!] REVERSANDO: Revisa tu conexión (VPN/Red) o si la máquina está encendida.${C_RST}"
-        exit 1
-    fi
     
-    echo -e "${C_GRN}[+] Conectividad OK.${C_RST}"
+    # --- MODIFICACION ALIEN: Lógica de Ping / Forzado ---
+    if ping -c 1 -W 1 "${TARGET_IP}" >/dev/null 2>&1; then
+        echo -e "${C_GRN}[+] Conectividad OK (Responde a Ping).${C_RST}"
+    else
+        echo -e "${C_RED}[!] La máquina (${TARGET_IP}) NO responde a ping.${C_RST}"
+        echo -e "${C_YEL}[i] Es posible que tenga un firewall bloqueando ICMP.${C_RST}"
+        
+        # PREGUNTA CRÍTICA
+        if ask_yes_no "¿Deseas OMITIR el chequeo de ping y forzar el escaneo?"; then
+            echo -e "${C_GRN}[+] Entendido. Asumiendo que el host está vivo.${C_RST}"
+            # No hacemos exit, dejamos que el script fluya
+        else
+            echo -e "${C_RED}[!] Abortado por el usuario. Revisa tu conexión.${C_RST}"
+            exit 1
+        fi
+    fi
+    # ----------------------------------------------------
+    
     echo -e "${C_YEL}[TARGET]: ${TARGET_IP}${C_RST}"
     
     # --- [PERSISTENCIA] Crear target.txt ---
@@ -189,9 +201,10 @@ detectar_ttl_y_os() {
     local host="$1"
     echo -e "${C_BLU}[*] FASE 1: Detectando OS (TTL)${C_RST}"
     local ttl
+    # Intentamos ping nuevamente solo para TTL, si falla y forzamos antes, esto dará vacío
     ttl=$(ping -c1 -W1 "$host" 2>/dev/null | awk -F'ttl=' '/ttl=/{split($2,a," "); print a[1]; exit}')
 
-    local os="Desconocido"
+    local os="Desconocido / Sin respuesta ICMP"
     [[ -n "$ttl" ]] && {
         if    (( ttl <= 64 ));  then os="Linux/Unix (TTL: ${ttl})"
         elif (( ttl <= 128 )); then os="Windows (TTL: ${ttl})"
@@ -206,6 +219,7 @@ escaneo_nmap_rapido() {
     local host="$1"
     echo
     echo -e "${C_BLU}[*] FASE 2: Discovery Rápido (SYN)${C_RST}"
+    # Nota: Ya usas -Pn aqui, perfecto para cuando forzamos el escaneo
     local cmd="nmap -n -Pn -T4 -sS --open -p- --min-rate 4000 ${host}"
     imprimir_comando "$cmd"
 
@@ -465,9 +479,9 @@ EOF
 - [ ] Otras:
 
 ## 4. Credenciales
-|     Usuario      |     Password      |     Hash      |     Servicio      |
-|------------------|-------------------|---------------|-------------------|
-|                  |                   |               |                   |
+|      Usuario      |      Password      |      Hash      |      Servicio      |
+|-------------------|-------------------|---------------|-------------------|
+|                   |                   |               |                   |
 
 ## 5. Flags
 - [ ] User Flag:
