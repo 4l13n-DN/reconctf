@@ -22,6 +22,7 @@ MACHINE_DIR=""
 OUTPUT_DIR=""           # MACHINE_DIR/nmap
 OPEN_PORTS_CSV=""       # Puertos abiertos detectados (fase rápida)
 LOG_FILE=""             # logs_<maquina>.txt
+PING_OMITIDO=0          # Variable de control para salto de ping
 
 # Usuario original que lanzó sudo
 ORIG_USER="${SUDO_USER:-$USER}"
@@ -166,6 +167,7 @@ leer_ip_objetivo() {
     # --- MODIFICACION ALIEN: Lógica de Ping / Forzado ---
     if ping -c 1 -W 1 "${TARGET_IP}" >/dev/null 2>&1; then
         echo -e "${C_GRN}[+] Conectividad OK (Responde a Ping).${C_RST}"
+        PING_OMITIDO=0
     else
         echo -e "${C_RED}[!] La máquina (${TARGET_IP}) NO responde a ping.${C_RST}"
         echo -e "${C_YEL}[i] Es posible que tenga un firewall bloqueando ICMP.${C_RST}"
@@ -173,7 +175,7 @@ leer_ip_objetivo() {
         # PREGUNTA CRÍTICA
         if ask_yes_no "¿Deseas OMITIR el chequeo de ping y forzar el escaneo?"; then
             echo -e "${C_GRN}[+] Entendido. Asumiendo que el host está vivo.${C_RST}"
-            # No hacemos exit, dejamos que el script fluya
+            PING_OMITIDO=1 # Marcamos que no hay ping
         else
             echo -e "${C_RED}[!] Abortado por el usuario. Revisa tu conexión.${C_RST}"
             exit 1
@@ -200,8 +202,18 @@ leer_ip_objetivo() {
 detectar_ttl_y_os() {
     local host="$1"
     echo -e "${C_BLU}[*] FASE 1: Detectando OS (TTL)${C_RST}"
+    
+    # --- CORRECCION: Si se omitió el ping, no intentamos calcular TTL ---
+    if [[ "${PING_OMITIDO}" -eq 1 ]]; then
+        echo -e "${C_YEL}[i] Ping bloqueado/omitido. Imposible calcular TTL vía ICMP.${C_RST}"
+        echo -e "${C_GRN}[+] Target: OS Indeterminado (ICMP Blocked)${C_RST}"
+        log_info "Detección OS: Saltada (Ping omitido)."
+        return
+    fi
+    # -------------------------------------------------------------------
+
     local ttl
-    # Intentamos ping nuevamente solo para TTL, si falla y forzamos antes, esto dará vacío
+    # Intentamos ping nuevamente solo para TTL
     ttl=$(ping -c1 -W1 "$host" 2>/dev/null | awk -F'ttl=' '/ttl=/{split($2,a," "); print a[1]; exit}')
 
     local os="Desconocido / Sin respuesta ICMP"
