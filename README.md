@@ -1,8 +1,6 @@
-# ⚠️ Yautja Recon 🛸
+# 👽 0xAlienSec ⚠️ Yautja Recon 🛸
 
-![Version](https://img.shields.io/badge/Version-1.0-purple?style=for-the-badge) 
-![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
-![Security](https://img.shields.io/badge/Security-Pentesting-red?style=for-the-badge)
+![Version](https://img.shields.io/badge/VERSION-1.0-green?style=for-the-badge) ![Platform](https://img.shields.io/badge/PLATFORM-LINUX-blue?style=for-the-badge) ![Security](https://img.shields.io/badge/Security-Pentesting-purple?style=for-the-badge) ![License](https://img.shields.io/badge/LICENSE-MIT-orange?style=for-the-badge) ![Author](https://img.shields.io/badge/AUTHOR-0XALIENSEC-red?style=for-the-badge) 
 
 **Yautja Recon** es una herramienta automatizada de reconocimiento y enumeración diseñada para entusiastas de la ciberseguridad y Pentesters, este script optimiza las fases iniciales de una auditoría, desde la detección de TTL hasta la generación de reportes detallados en Markdown.
 
