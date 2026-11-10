@@ -26,12 +26,14 @@ MODO_EXPLICAR=1         # 1 = muestra qué hace, por qué y qué observar en cad
 MODO_AUTO=0             # 1 = sin pausas entre fases (-y)
 MODO_IMPRIMIR=0         # 1 = solo imprime el plan de comandos, no ejecuta (-p)
 TERMINOS_USADOS=()      # Glosario de la sesión
+VHOST_DOMINIO=""        # Dominio detectado por redirección y resuelto en /etc/hosts
+VEL=()                  # Opciones de velocidad elegidas para el escaneo en curso
 T_INICIO=$(date +%s)
 
 # Usuario original que lanzó sudo
 ORIG_USER="${SUDO_USER:-${USER:-root}}"
 
-trap 'echo -e "\n\n${C_YEL}[!] Abortado por el usuario.${C_RST}"; log_info "Proceso abortado por el usuario (Ctrl+C)."; exit 1' INT
+trap 'echo -e "\n\n${C_YEL}[!] Abortado por el usuario.${C_RST}"; log_info "Proceso abortado por el usuario (Ctrl+C)."; [[ -n "${MACHINE_DIR}" && -d "${MACHINE_DIR}" ]] && chown -R "${ORIG_USER}:${ORIG_USER}" "${MACHINE_DIR}" 2>/dev/null; exit 1' INT
 
 # --- [1] Helpers de Logging y Auditoría ---
 
@@ -107,6 +109,9 @@ usar_termino() {
 
 definir_termino() {
     case "$1" in
+        ROCKYOU)  echo "rockyou.txt: diccionario con millones de contraseñas reales filtradas. Que tu clave esté ahí significa que ya no es secreta." ;;
+        NIKTO)    echo "Nikto: escáner de servidores web que busca archivos, versiones y configuraciones inseguras conocidas. Ruidoso: solo con permiso." ;;
+        TIMING)   echo "Velocidad de nmap: -T0 a -T5 es la plantilla de tiempos. --min-rate fija un mínimo de paquetes por segundo. Más velocidad, más riesgo de perder resultados." ;;
         TTL)      echo "TTL (time to live): número que baja en cada salto de red. Su valor inicial sugiere el sistema operativo." ;;
         ICMP)     echo "ICMP: protocolo del ping. Muchos firewalls lo bloquean, y eso no significa que el equipo esté apagado." ;;
         SYN)      echo "SYN scan (-sS): escaneo medio abierto. Manda SYN y no completa el saludo TCP de tres vías." ;;
@@ -135,6 +140,65 @@ Uso: sudo ./yautja_recon.sh [opciones]
   -h   Esta ayuda
 Solo para laboratorios y CTF autorizados.
 USO
+}
+
+# --- [1.05] Selector de velocidad de nmap ---
+elegir_velocidad() {
+    # Uso: elegir_velocidad "Nombre de la fase" <opcion_por_defecto 1-5>
+    # Deja el resultado en el arreglo global VEL
+    local fase="$1" def="$2" op t mr
+    usar_termino TIMING
+    echo -e "${C_YEL}[?] Velocidad para ${fase}:${C_RST}"
+    echo    "    1) -T3                    Normal. Lo más confiable, más lento."
+    echo    "    2) -T4                    Rápido. Bueno para laboratorio y CTF."
+    echo    "    3) -T4 --min-rate 1000    Rápido con piso de paquetes. Buen equilibrio en VPN."
+    echo    "    4) -T4 --min-rate 3000    Muy rápido. Riesgo de perder puertos."
+    echo    "    5) Personalizado          Elegir -T0 a -T5 y, si quieres, un --min-rate."
+    if [[ "${MODO_EXPLICAR}" -eq 1 ]]; then
+        echo -e "${C_CYN}    -T es la plantilla de tiempos: -T0 muy lento y sigiloso, -T5 agresivo.${C_RST}"
+        echo -e "${C_CYN}    --min-rate obliga a nmap a enviar al menos N paquetes por segundo.${C_RST}"
+        echo -e "${C_RED}    Ojo: con --min-rate alto, la VPN o el objetivo pueden perder paquetes.${C_RST}"
+        echo -e "${C_RED}    Un paquete perdido es un puerto que no aparece, o un script que no termina.${C_RST}"
+        echo -e "${C_CYN}    Si algo no cuadra, repite con menos velocidad.${C_RST}"
+    fi
+    echo -en "${C_YEL}>> Opción [${def}]: ${C_RST}"
+    read -r op || true
+    op="${op:-$def}"
+    case "${op}" in
+        1) VEL=(-T3) ;;
+        2) VEL=(-T4) ;;
+        3) VEL=(-T4 --min-rate 1000) ;;
+        4) VEL=(-T4 --min-rate 3000) ;;
+        5)
+            echo -en "${C_YEL}>> Plantilla -T (0 a 5) [4]: ${C_RST}"
+            read -r t || true
+            t="${t:-4}"
+            [[ "${t}" =~ ^[0-5]$ ]] || { echo -e "${C_RED}[!] Inválido. Uso -T4.${C_RST}"; t=4; }
+            VEL=("-T${t}")
+            echo -en "${C_YEL}>> --min-rate (Enter = sin min-rate): ${C_RST}"
+            read -r mr || true
+            if [[ -n "${mr:-}" ]]; then
+                if [[ "${mr}" =~ ^[0-9]+$ ]] && (( mr >= 1 && mr <= 10000 )); then
+                    VEL+=(--min-rate "${mr}")
+                else
+                    echo -e "${C_RED}[!] min-rate inválido (1 a 10000). Se omite.${C_RST}"
+                fi
+            fi
+            ;;
+        *) echo -e "${C_RED}[!] Opción inválida. Uso la ${def}.${C_RST}"; elegir_velocidad_fija "${def}" ;;
+    esac
+    echo -e "${C_GRN}[+] Velocidad elegida: ${VEL[*]}${C_RST}"
+    log_info "Velocidad ${fase}: ${VEL[*]}"
+    echo
+}
+
+elegir_velocidad_fija() {
+    case "$1" in
+        1) VEL=(-T3) ;;
+        2) VEL=(-T4) ;;
+        3) VEL=(-T4 --min-rate 1000) ;;
+        *) VEL=(-T4 --min-rate 3000) ;;
+    esac
 }
 
 # --- [1.1] Detección de IP Atacante ---
@@ -187,7 +251,7 @@ check_deps() {
 configurar_maquina() {
     echo -e "${C_BLU}[*] CONFIGURACIÓN INICIAL${C_RST}"
     echo -en "${C_YEL}[?] Nombre de la máquina (sin espacios): ${C_RST}"
-    read -r MACHINE_NAME
+    read -r MACHINE_NAME || true
 
     if [[ ! "${MACHINE_NAME}" =~ ^[A-Za-z0-9._-]+$ || "${MACHINE_NAME}" == .* ]]; then
         echo -e "${C_RED}[!] Nombre inválido.${C_RST}"
@@ -236,7 +300,7 @@ leer_ip_objetivo() {
         local ip_prev
         ip_prev=$(head -n1 "${previo}")
         echo -e "${C_CYN}[i] Sesión anterior encontrada. Objetivo guardado: ${ip_prev}${C_RST}"
-        echo -e "${C_YEL}[i] En TryHackMe la IP cambia cada vez que reinicias la máquina.${C_RST}"
+        echo -e "${C_YEL}[i] En muchas plataformas CTF la IP cambia cada vez que reinicias la máquina.${C_RST}"
         if ask_yes_no "¿Reanudar con esa misma IP?"; then
             TARGET_IP="${ip_prev}"
             log_info "Sesión reanudada con IP ${TARGET_IP}"
@@ -244,7 +308,7 @@ leer_ip_objetivo() {
     fi
     if [[ -z "${TARGET_IP}" ]]; then
         echo -en "${C_YEL}[?] Ingresa la IP o dominio a analizar: ${C_RST}"
-        read -r TARGET_IP
+        read -r TARGET_IP || true
     fi
 
     if [[ ! "${TARGET_IP}" =~ ^[A-Za-z0-9.:-]+$ ]]; then
@@ -284,6 +348,8 @@ leer_ip_objetivo() {
     echo -e "${C_CYN}[i] Tip: Ejecuta 'export IP=\$(<${target_file})' si necesitas la variable en tu terminal.${C_RST}"
     echo
     
+    panel_target "${MACHINE_NAME} · ${TARGET_IP}"
+    echo -e "${C_CYN}[i] Objetivo publicado en la barra superior (si tienes el Generic Monitor configurado).${C_RST}"
     log_info "Objetivo fijado: ${TARGET_IP}"
     log_info "IP Atacante: ${ATTACKER_IP}"
 }
@@ -329,7 +395,7 @@ escaneo_nmap_rapido() {
     usar_termino SYN PUERTO
     explicar "Escaneo SYN de todos los puertos" \
         "Prueba los 65535 puertos TCP con -sS (medio abierto) y -p-." \
-        "Los servicios no siempre están en puertos comunes. -Pn salta el ping, --min-rate acelera, --open muestra solo los abiertos." \
+        "Los servicios no siempre están en puertos comunes. -Pn salta el ping, --open muestra solo los abiertos. La velocidad la eliges tú." \
         "La lista de puertos abiertos. Cada uno es una puerta posible. Anótalos."
     local previo="${OUTPUT_DIR}/${host}_allports.nmap"
     if [[ -s "${previo}" ]] && grep -qE '^[0-9]+/tcp' "${previo}"; then
@@ -347,10 +413,11 @@ escaneo_nmap_rapido() {
     fi
     local t0; t0=$(date +%s)
     # Nota: Ya usas -Pn aqui, perfecto para cuando forzamos el escaneo
-    local cmd="nmap -n -Pn -T4 -sS --open -p- --min-rate 4000 -oN ${OUTPUT_DIR}/${host}_allports.nmap ${host}"
+    elegir_velocidad "Fase 2 (todos los puertos)" 4
+    local cmd="nmap -n -Pn ${VEL[*]} -sS --open -p- -oN ${OUTPUT_DIR}/${host}_allports.nmap ${host}"
     imprimir_comando "$cmd"
 
-    nmap -n -Pn -T4 -sS --open -p- --min-rate 4000 -oN "${OUTPUT_DIR}/${host}_allports.nmap" "${host}" || true
+    nmap -n -Pn "${VEL[@]}" -sS --open -p- -oN "${OUTPUT_DIR}/${host}_allports.nmap" "${host}" || true
     tiempo_fase "${t0}" "Fase 2"
     local puertos_nl
     puertos_nl=$(grep -E '^[0-9]+/tcp' "${OUTPUT_DIR}/${host}_allports.nmap" 2>/dev/null | cut -d'/' -f1 || true)
@@ -413,10 +480,11 @@ escaneo_nmap_agresivo() {
         "Solo sobre los puertos abiertos: es mucho más rápido que hacerlo en los 65535. La versión exacta dice si hay fallas públicas." \
         "Nombre y versión de cada servicio, títulos web, nombre del equipo y datos de SMB. -oA guarda la evidencia en 3 formatos."
     local t0; t0=$(date +%s)
-    local cmd="nmap -n -Pn -sV -sC -vv --min-rate 3000 -p${port_list} -oA ${output_base} ${host}"
+    elegir_velocidad "Fase 3 (versiones y scripts)" 2
+    local cmd="nmap -n -Pn -sV -sC -vv ${VEL[*]} -p${port_list} -oA ${output_base} ${host}"
     imprimir_comando "$cmd"
     
-    nmap -n -Pn -sV -sC -vv --min-rate 3000 -p"${port_list}" -oA "${output_base}" "${host}"
+    nmap -n -Pn -sV -sC -vv "${VEL[@]}" -p"${port_list}" -oA "${output_base}" "${host}" || true
     tiempo_fase "${t0}" "Fase 3"
     generar_html "${output_base}.xml" "${output_base}.html"
     buscar_exploits_publicos "${output_base}.xml"
@@ -463,6 +531,9 @@ generar_droide_vuln() {
     [[ -z "${port_list}" ]] && return
 
     local droid_path="${MACHINE_DIR}/droid.sh"
+    echo -e "${C_CYN}[i] droid.sh corre --script vuln. Esos scripts necesitan respuestas completas: conviene ir más lento.${C_RST}"
+    elegir_velocidad "droid.sh (scripts vuln)" 2
+    local droid_vel="${VEL[*]}"
 
     # Generamos el script
     cat > "${droid_path}" <<EOF
@@ -481,7 +552,10 @@ OUTPUT_DIR="nmap"
 BASE_NAME="\${HOST}_vuln_scan"
 
 echo "Ejecutando escaneo vuln sobre \${HOST}..."
-nmap -n -Pn --min-rate 3000 -T4 --script vuln --script-timeout 60s -vv -p"\${PORT_LIST}" -oA "\${OUTPUT_DIR}/\${BASE_NAME}" "\${HOST}"
+VEL="${droid_vel}"
+echo "Velocidad: \${VEL}"
+# shellcheck disable=SC2086
+nmap -n -Pn \${VEL} --script vuln --script-timeout 60s -vv -p"\${PORT_LIST}" -oA "\${OUTPUT_DIR}/\${BASE_NAME}" "\${HOST}"
 
 if [[ -f "\${OUTPUT_DIR}/\${BASE_NAME}.xml" ]]; then
     xsltproc "\${OUTPUT_DIR}/\${BASE_NAME}.xml" -o "\${OUTPUT_DIR}/\${BASE_NAME}.html"
@@ -536,6 +610,12 @@ enum_web_port() {
     echo -e "${C_GRN}SÍ (${scheme}).${C_RST}"
     local base_url="${scheme}://${host}:${port}"
     detectar_vhost "${scheme}" "${host}" "${port}"
+    if [[ -n "${VHOST_DOMINIO}" ]]; then
+        base_url="${scheme}://${VHOST_DOMINIO}:${port}"
+        echo -e "${C_CYN}[i] Desde aquí la enumeración usa el dominio: ${base_url}${C_RST}"
+        echo -e "${C_CYN}    Por qué: el servidor muestra el sitio real solo cuando le pides ese nombre.${C_RST}"
+        log_info "ENUMWEB usa el vhost ${base_url}"
+    fi
 
     usar_termino FUZZING HTTP
     explicar "Enumeración web" \
@@ -584,7 +664,7 @@ enum_web_port() {
             fi
         elif [[ "${wl_option:-}" == "2" ]]; then
             echo -en "${C_YEL}>> Ingresa la ruta completa del diccionario: ${C_RST}"
-            read -r custom_wl
+            read -r custom_wl || true
             # Remover comillas
             custom_wl="${custom_wl%\"}"
             custom_wl="${custom_wl#\"}"
@@ -605,7 +685,7 @@ enum_web_port() {
         # Hilos de gobuster (pregunta, por defecto 150)
         local hilos=150
         echo -e "${C_YEL}[?] Hilos para Gobuster (más hilos = más rápido y más ruido).${C_RST}"
-        echo -e "    Recomendado: 150 en TryHackMe. Si ves timeouts o errores, baja a 50."
+        echo -e "    Recomendado: 150 en laboratorios por VPN. Si ves timeouts o errores, baja a 50."
         echo -en "${C_YEL}>> Hilos [150]: ${C_RST}"
         read -r hilos_in || true
         if [[ -n "${hilos_in:-}" ]]; then
@@ -657,7 +737,205 @@ enum_web_port() {
             rm -f "${web_dir}/${file}"
         fi
     done
+    # --- Nivel 2: fuzzing dentro de las carpetas que elijas ---
+    if [[ -n "${chosen_wl:-}" && -f "${web_dir}/gobuster.txt" ]]; then
+        gobuster_nivel2 "${base_url}" "${web_dir}" "${chosen_wl}" "${hilos:-150}"
+    fi
+    nikto_web "${base_url}" "${web_dir}"
     echo -e "${C_GRN}[OK] Resultados en: ${web_dir}${C_RST}"
+}
+
+# --- [2.1b] Target en la barra superior de Kali (XFCE Generic Monitor) ---
+PANEL_FILE="/tmp/yautja_target"     # /tmp se borra en cada reinicio
+
+panel_target() {
+    # Uso: panel_target "<texto>"   (vacío = sin objetivo)
+    # /tmp tiene sticky bit y Kali activa fs.protected_regular: root no puede
+    # sobrescribir un archivo de otro usuario ahí, pero sí borrarlo y crearlo de nuevo.
+    rm -f "${PANEL_FILE}" 2>/dev/null || true
+    { printf '%s\n' "$1" > "${PANEL_FILE}"; } 2>/dev/null || {
+        log_info "No se pudo escribir ${PANEL_FILE} (barra superior). Se continúa."
+        return 0
+    }
+    chown "${ORIG_USER}:${ORIG_USER}" "${PANEL_FILE}" 2>/dev/null || true
+    chmod 644 "${PANEL_FILE}" 2>/dev/null || true
+}
+
+preparar_panel() {
+    # Crea el script que lee el panel y explica cómo agregarlo una sola vez
+    local home helper rc
+    home=$(getent passwd "${ORIG_USER}" | cut -d: -f6)
+    [[ -n "${home}" && -d "${home}" ]] || return 0
+    helper="${home}/.local/bin/yautja-panel.sh"
+    if [[ ! -x "${helper}" ]]; then
+        mkdir -p "${home}/.local/bin"
+        cat > "${helper}" <<'PANEL'
+#!/bin/bash
+# Muestra el objetivo actual de Yautja en la barra de Kali (Generic Monitor)
+f=/tmp/yautja_target
+if [ -s "$f" ]; then
+    echo "<txt>  ◎ $(head -n1 "$f")  </txt>"
+    echo "<tool>Objetivo actual de Yautja Recon</tool>"
+else
+    echo "<txt>  ◎ sin objetivo  </txt>"
+fi
+PANEL
+        chmod 755 "${helper}"
+        chown -R "${ORIG_USER}:${ORIG_USER}" "${home}/.local" 2>/dev/null || true
+        log_info "Helper del panel creado en ${helper}"
+    fi
+    rc=$(grep -l "yautja-panel.sh" "${home}"/.config/xfce4/panel/genmon-*.rc 2>/dev/null | head -n1 || true)
+    if [[ -z "${rc}" ]]; then
+        echo -e "${C_CYN}[i] Para ver el objetivo en la barra superior de Kali (se configura una sola vez):${C_RST}"
+        echo    "    1) sudo apt install xfce4-genmon-plugin   (si no lo tienes)"
+        echo    "    2) Clic derecho en la barra → Panel → Agregar nuevos elementos → Generic Monitor"
+        echo    "    3) Clic derecho en el nuevo elemento → Propiedades:"
+        echo    "         Comando:   ${helper}"
+        echo    "         Etiqueta:  desmarcar"
+        echo    "         Período:   2 segundos"
+        echo -e "${C_CYN}    Desde ahí la barra muestra el objetivo de cada ejecución. Al reiniciar Kali vuelve a 'sin objetivo'.${C_RST}"
+        echo
+    fi
+}
+
+# --- [2.2] Preparación del entorno: rockyou ---
+revisar_rockyou() {
+    local dir="/usr/share/wordlists" txt="/usr/share/wordlists/rockyou.txt" gz="/usr/share/wordlists/rockyou.txt.gz"
+    echo -e "${C_BLU}[*] PREPARACIÓN: diccionario rockyou${C_RST}"
+    usar_termino ROCKYOU
+    explicar "rockyou.txt" \
+        "Revisa si el diccionario rockyou está listo para usar en ${dir}." \
+        "Es la lista de contraseñas más usada en CTF: millones de claves reales filtradas. Kali la trae comprimida y hay que descomprimirla una vez." \
+        "Si dice LISTO, ya puedes usarla con john o hydra. Si está solo el .gz, se descomprime aquí."
+    if [[ -s "${txt}" ]]; then
+        echo -e "${C_GRN}[+] rockyou LISTO: ${txt} ($(du -h "${txt}" | cut -f1))${C_RST}"
+        log_info "rockyou disponible en ${txt}"
+    elif [[ -s "${gz}" ]]; then
+        echo -e "${C_YEL}[i] Solo existe la versión comprimida: ${gz}${C_RST}"
+        if ask_yes_no "¿Descomprimirla ahora (gzip -dk, conserva el .gz)?"; then
+            imprimir_comando "gzip -dk ${gz}"
+            gzip -dk "${gz}"
+            echo -e "${C_GRN}[+] Listo: ${txt} ($(du -h "${txt}" | cut -f1))${C_RST}"
+            log_info "rockyou descomprimido en ${txt}"
+        fi
+    else
+        echo -e "${C_YEL}[i] No se encontró rockyou en ${dir}.${C_RST}"
+        echo -e "${C_YEL}    En Kali se instala con: sudo apt install wordlists${C_RST}"
+        log_info "rockyou no encontrado"
+    fi
+    echo
+}
+
+# --- [4C] Nikto opcional ---
+nikto_web() {
+    # No se ejecuta aquí: tarda mucho. Deja el comando listo para correrlo en otra terminal.
+    local base_url="$1" web_dir="$2"
+    echo
+    echo -e "${C_BLU}[*] FASE 4C: Nikto (comando listo para correr aparte)${C_RST}"
+    usar_termino NIKTO
+    explicar "Nikto" \
+        "Revisa el servidor web contra miles de pruebas conocidas: archivos peligrosos, versiones viejas, cabeceras faltantes y configuraciones inseguras." \
+        "Complementa a gobuster: gobuster busca rutas, nikto busca problemas conocidos. Es lento y ruidoso, por eso no corre aquí: lo lanzas en otra terminal mientras sigues trabajando." \
+        "Líneas que empiezan con +. Prioriza versiones desactualizadas, respaldos o configuración expuestos y métodos HTTP peligrosos. Valida antes de anotarlos."
+    local out cmd pend
+    out="$(realpath -m "${web_dir}")/nikto.txt"
+    cmd="nikto -h ${base_url} -maxtime 10m -o ${out} -Format txt"
+    pend="${MACHINE_DIR}/comandos_pendientes.txt"
+    command -v nikto >/dev/null 2>&1 || echo -e "${C_YEL}[i] nikto no está instalado: sudo apt install nikto${C_RST}"
+    echo -e "${C_GRN}[+] Comando listo (cópialo en otra terminal):${C_RST}"
+    echo -e "      ${C_CYN}${cmd}${C_RST}"
+    echo -e "${C_CYN}    -maxtime 10m limita el tiempo. Súbelo si quieres una revisión completa.${C_RST}"
+    echo "# Nikto ${base_url} ($(date '+%F %H:%M'))" >> "${pend}"
+    echo "${cmd}" >> "${pend}"
+    echo -e "${C_GRN}[+] También quedó guardado en ${pend}${C_RST}"
+    log_info "Nikto pendiente (no ejecutado): ${cmd}"
+}
+
+# --- [4B] Gobuster nivel 2 (recursivo controlado) ---
+candidatos_nivel2() {
+    # Imprime rutas candidatas a carpeta, una por línea, sin repetir:
+    #  - de gobuster: 301/302 (redirige a carpeta) o 200/401/403 sin extensión
+    #  - de robots.txt: rutas en Disallow
+    local web_dir="$1"
+    {
+        grep -E "Status: (301|302|200|401|403)" "${web_dir}/gobuster.txt" 2>/dev/null \
+            | awk '{print $1}' | grep -vE '\.[A-Za-z0-9]{1,5}$' || true
+        if [[ -s "${web_dir}/robots.txt" ]]; then
+            grep -i '^Disallow:' "${web_dir}/robots.txt" | awk '{print $2}' \
+                | sed -E 's#\?.*$##; s#/$##' | grep -E '^/[^*]+$' | grep -vE '\.[A-Za-z0-9]{1,5}$' || true
+        fi
+    } | sed -E 's#/$##' | grep -vE '^/?$' | sort -u
+}
+
+gobuster_nivel2() {
+    local base_url="$1" web_dir="$2" wl="$3" hilos="$4"
+    local -a cand=()
+    mapfile -t cand < <(candidatos_nivel2 "${web_dir}")
+    [[ ${#cand[@]} -gt 0 ]] || { echo -e "${C_YEL}[i] No hay carpetas candidatas para un segundo nivel.${C_RST}"; return 0; }
+
+    echo
+    echo -e "${C_BLU}[*] FASE 4B: Fuzzing de segundo nivel (dentro de carpetas)${C_RST}"
+    explicar "Enumeración recursiva controlada" \
+        "Vuelve a correr gobuster, pero dentro de las carpetas que tú elijas." \
+        "Lo interesante suele estar más adentro: /admin/backup, /dev/notes. Elegir a mano evita gastar tiempo en carpetas inútiles como /images o /css." \
+        "Rutas nuevas dentro de cada carpeta. Solo se baja un nivel más: si quieres ir más profundo, hazlo a mano con criterio."
+    echo -e "${C_CYN}  Candidatas (de gobuster y de robots.txt):${C_RST}"
+    local i
+    for i in "${!cand[@]}"; do
+        printf "    %2d) %s\n" "$((i+1))" "${cand[$i]}"
+    done
+    echo -e "${C_CYN}  Pista: prioriza nombres como admin, dev, backup, uploads, config, api, private.${C_RST}"
+    echo -en "${C_YEL}>> Números separados por coma, 't' para todas, Enter para ninguna: ${C_RST}"
+    local sel
+    read -r sel || true
+    sel="${sel// /}"
+    [[ -z "${sel}" ]] && { echo -e "${C_GRN}[+] Sin segundo nivel.${C_RST}"; return 0; }
+
+    local -a elegidas=()
+    if [[ "${sel,,}" == "t" ]]; then
+        elegidas=("${cand[@]}")
+    else
+        local n
+        IFS=',' read -r -a nums <<< "${sel}"
+        for n in "${nums[@]}"; do
+            if [[ "${n}" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#cand[@]} )); then
+                elegidas+=("${cand[$((n-1))]}")
+            else
+                echo -e "${C_RED}[!] '${n}' no es una opción válida. Se omite.${C_RST}"
+            fi
+        done
+    fi
+    [[ ${#elegidas[@]} -gt 0 ]] || return 0
+
+    echo -e "${C_YEL}[?] ¿Mismo diccionario y ${hilos} hilos para el segundo nivel?${C_RST}"
+    if ! ask_yes_no "Usar la misma configuración"; then
+        echo -en "${C_YEL}>> Ruta del diccionario [${wl}]: ${C_RST}"
+        local wl_in; read -r wl_in || true
+        if [[ -n "${wl_in:-}" ]]; then
+            if [[ -f "${wl_in}" ]]; then wl="${wl_in}"; else echo -e "${C_RED}[!] No existe. Uso ${wl}.${C_RST}"; fi
+        fi
+        echo -en "${C_YEL}>> Hilos [${hilos}]: ${C_RST}"
+        local h_in; read -r h_in || true
+        if [[ -n "${h_in:-}" ]]; then
+            if [[ "${h_in}" =~ ^[0-9]+$ ]] && (( h_in >= 1 && h_in <= 300 )); then hilos="${h_in}"; else echo -e "${C_RED}[!] Inválido. Uso ${hilos}.${C_RST}"; fi
+        fi
+    fi
+
+    local ruta nombre out hits
+    for ruta in "${elegidas[@]}"; do
+        nombre=$(echo "${ruta}" | tr '/' '_' | sed 's/^_//')
+        out="${web_dir}/gobuster_nivel2_${nombre}.txt"
+        echo
+        echo -e "${C_BLU}[*] Nivel 2 en ${base_url}${ruta}/${C_RST}"
+        imprimir_comando "gobuster dir -u ${base_url}${ruta}/ -w ${wl} -x txt,php,zip,bak -s 200,204,301,302,307,401,403 -b '' -t ${hilos} -k --no-error -o ${out}"
+        gobuster dir -u "${base_url}${ruta}/" -w "${wl}" -x txt,php,zip,bak \
+            -s 200,204,301,302,307,401,403 -b "" -t "${hilos}" -k --no-error -o "${out}" || true
+        hits=$(grep -c "Status:" "${out}" 2>/dev/null || true)
+        echo -e "${C_GRN}[+] ${ruta}/: ${hits:-0} rutas encontradas. Guardado en ${out}${C_RST}"
+        log_data "--- Gobuster nivel 2: ${ruta}/ ---"
+        grep "Status:" "${out}" 2>/dev/null | sed "s#^#${ruta}#" >> "${LOG_FILE}" || true
+    done
+    echo -e "${C_CYN}[i] Fin del nivel 2. No se baja más automáticamente: revisa lo encontrado y decide a mano.${C_RST}"
 }
 
 # --- [5] Funciones extra de reconocimiento ---
@@ -666,6 +944,7 @@ detectar_vhost() {
     # Si la web redirige a un dominio, sugiere agregarlo a /etc/hosts
     local scheme="$1" host="$2" port="$3"
     local destino dominio
+    VHOST_DOMINIO=""
     destino=$(curl -sk -o /dev/null -w "%{redirect_url}" --connect-timeout 5 "${scheme}://${host}:${port}/" || true)
     [[ -z "${destino}" ]] && return 0
     dominio=$(echo "${destino}" | sed -E 's#^[a-zA-Z]+://##; s#[:/].*$##')
@@ -681,6 +960,7 @@ detectar_vhost() {
     log_info "VHOST detectado: ${dominio} (redirección desde ${scheme}://${host}:${port})"
     if grep -qE "[[:space:]]${dominio}([[:space:]]|$)" /etc/hosts; then
         echo -e "${C_GRN}[+] ${dominio} ya está en /etc/hosts.${C_RST}"
+        VHOST_DOMINIO="${dominio}"
         return 0
     fi
     echo -e "${C_CYN}  Línea sugerida: ${host}    ${dominio}${C_RST}"
@@ -688,6 +968,7 @@ detectar_vhost() {
         imprimir_comando "echo '${host}    ${dominio}' >> /etc/hosts"
         echo "${host}    ${dominio}" >> /etc/hosts
         echo -e "${C_GRN}[+] Agregado. Desde ahora puedes usar ${dominio}.${C_RST}"
+        VHOST_DOMINIO="${dominio}"
         log_info "Agregado a /etc/hosts: ${host} ${dominio}"
     fi
 }
@@ -754,6 +1035,9 @@ modo_imprimir() {
     local ip="IP_OBJETIVO" m="MAQUINA"
     echo -e "${C_BLU}=== MODO PLAN: comandos de cada fase (no se ejecuta nada) ===${C_RST}"
     echo
+    echo -e "${C_BOLD}Preparación${C_RST}"
+    echo "    ls -lh /usr/share/wordlists/rockyou.txt* ; sudo gzip -dk /usr/share/wordlists/rockyou.txt.gz"
+    echo
     echo -e "${C_BOLD}0. Carpeta y objetivo${C_RST}"
     echo "    mkdir -p ${m}/{nmap,exploit,otros}"
     echo "    echo \"${ip}\" > ${m}/target.txt && export IP=\$(<${m}/target.txt)"
@@ -764,7 +1048,8 @@ modo_imprimir() {
     echo "    Por qué: 64 sugiere Linux, 128 Windows. Si no responde, ICMP puede estar bloqueado."
     echo
     echo -e "${C_BOLD}2. Todos los puertos${C_RST}"
-    echo "    sudo nmap -n -Pn -T4 -sS --open -p- --min-rate 4000 -oN ${m}/nmap/allports.nmap ${ip}"
+    echo "    sudo nmap -n -Pn -T4 -sS --open -p- -oN ${m}/nmap/allports.nmap ${ip}"
+    echo "    Velocidad: -T3 confiable, -T4 rápido. --min-rate N acelera pero puede perder paquetes y puertos."
     echo "    Por qué: los servicios no siempre están en puertos comunes."
     echo
     echo -e "${C_BOLD}3. Versiones${C_RST}"
@@ -785,6 +1070,8 @@ modo_imprimir() {
     echo "    curl -skI http://${ip}/      # redirige a un dominio? -> /etc/hosts"
     echo "    curl -s http://${ip}/robots.txt"
     echo "    gobuster dir -u http://${ip} -w /usr/share/wordlists/dirb/common.txt -x txt,php,zip -t <hilos> -o ${m}/otros/gobuster.txt"
+    echo
+    echo "    nikto -h http://${ip} -maxtime 10m -o ${m}/otros/nikto.txt -Format txt   # ruidoso, opcional"
     echo
     echo -e "${C_BOLD}5. Vulnerabilidades (aparte)${C_RST}"
     echo "    sudo nmap -n -Pn --script vuln -p<puertos> -oA ${m}/nmap/vuln ${ip}"
@@ -942,11 +1229,15 @@ main() {
     fi
     check_deps
     check_root
+    panel_target ""
     show_banner
+    preparar_panel
     configurar_maquina
     leer_ip_objetivo
 
     log_info "INICIO DE ESCANEO"
+
+    revisar_rockyou
 
     detectar_ttl_y_os "${TARGET_IP}"
     pausa
@@ -970,7 +1261,7 @@ main() {
 
     if ask_yes_no "¿Ejecutar ENUMWEB en puertos específicos?"; then
         echo -en "${C_YEL}[?] Puertos (ej: 80,8080): ${C_RST}"
-        read -r http_ports_input
+        read -r http_ports_input || true
         
         http_ports_input="${http_ports_input// /}"
         IFS=',' read -r -a HTTP_PORTS <<< "${http_ports_input}"
@@ -999,6 +1290,7 @@ main() {
     echo -e "  Objetivo:        ${TARGET_IP}"
     echo -e "  Puertos:         ${OPEN_PORTS_CSV:-Ninguno}"
     echo -e "  Evidencia nmap:  ${OUTPUT_DIR}/"
+    [[ -s "${MACHINE_DIR}/comandos_pendientes.txt" ]] && echo -e "  Pendientes:      ${MACHINE_DIR}/comandos_pendientes.txt (nikto y otros para correr aparte)"
     echo -e "  Notas:           ${MACHINE_DIR}/notashacking_${MACHINE_NAME}*.md"
     echo -e "  Tiempo total:    $(( $(date +%s) - T_INICIO )) s"
     echo -e "${C_YEL}  Siguiente paso: lee las versiones, revisa searchsploit y, si quieres, corre droid.sh aparte.${C_RST}"
