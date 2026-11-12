@@ -318,20 +318,22 @@ leer_ip_objetivo() {
 
     echo -e "${C_BLU}[*] Comprobando conectividad (ping)...${C_RST}"
     
-    # --- MODIFICACION ALIEN: Lógica de Ping / Forzado ---
+    # --- Logica de Ping / -Pn ---
     if ping -c 1 -W 1 "${TARGET_IP}" >/dev/null 2>&1; then
-        echo -e "${C_GRN}[+] Conectividad OK (Responde a Ping).${C_RST}"
+        echo -e "${C_GRN}[+] Conectividad OK: responde a ping (ICMP).${C_RST}"
+        echo -e "${C_CYN}    Por que: el host contesta ICMP, esta vivo y alcanzable. No hace falta forzar nada.${C_RST}"
+        echo -e "${C_CYN}    Aun asi el escaneo usa -Pn, para no depender del ping y no perder puertos si el ICMP se filtra.${C_RST}"
         PING_OMITIDO=0
     else
-        echo -e "${C_RED}[!] La máquina (${TARGET_IP}) NO responde a ping.${C_RST}"
-        echo -e "${C_YEL}[i] Es posible que tenga un firewall bloqueando ICMP.${C_RST}"
-        
-        # PREGUNTA CRÍTICA
-        if ask_yes_no "¿Deseas OMITIR el chequeo de ping y forzar el escaneo?"; then
-            echo -e "${C_GRN}[+] Entendido. Asumiendo que el host está vivo.${C_RST}"
-            PING_OMITIDO=1 # Marcamos que no hay ping
+        echo -e "${C_RED}[!] La maquina (${TARGET_IP}) NO responde a ping.${C_RST}"
+        echo -e "${C_YEL}[i] No significa que este apagada: muchos firewalls bloquean ICMP.${C_RST}"
+        echo -e "${C_GRN}[>] Recomendado en ESTE caso: escanear con -Pn (salta el ping y escanea igual).${C_RST}"
+        echo -e "${C_CYN}    Yautja ya incluye -Pn en el escaneo, asi que puedes continuar.${C_RST}"
+        if ask_yes_no "¿Continuar con -Pn (forzar el escaneo sin ping)?"; then
+            echo -e "${C_GRN}[+] Entendido. Escaneo con -Pn, asumiendo el host vivo.${C_RST}"
+            PING_OMITIDO=1
         else
-            echo -e "${C_RED}[!] Abortado por el usuario. Revisa tu conexión.${C_RST}"
+            echo -e "${C_RED}[!] Abortado por el usuario. Revisa tu conexion/VPN.${C_RST}"
             exit 1
         fi
     fi
@@ -414,10 +416,10 @@ escaneo_nmap_rapido() {
     local t0; t0=$(date +%s)
     # Nota: Ya usas -Pn aqui, perfecto para cuando forzamos el escaneo
     elegir_velocidad "Fase 2 (todos los puertos)" 4
-    local cmd="nmap -n -Pn ${VEL[*]} -sS --open -p- -oN ${OUTPUT_DIR}/${host}_allports.nmap ${host}"
+    local cmd="nmap -n -Pn -v ${VEL[*]} -sS --open -p- -oN ${OUTPUT_DIR}/${host}_allports.nmap ${host}"
     imprimir_comando "$cmd"
 
-    nmap -n -Pn "${VEL[@]}" -sS --open -p- -oN "${OUTPUT_DIR}/${host}_allports.nmap" "${host}" || true
+    nmap -n -Pn -v "${VEL[@]}" -sS --open -p- -oN "${OUTPUT_DIR}/${host}_allports.nmap" "${host}" || true
     tiempo_fase "${t0}" "Fase 2"
     local puertos_nl
     puertos_nl=$(grep -E '^[0-9]+/tcp' "${OUTPUT_DIR}/${host}_allports.nmap" 2>/dev/null | cut -d'/' -f1 || true)
@@ -629,95 +631,15 @@ enum_web_port() {
 
     # --- Whatweb ---
     echo "--- Whatweb ---"
-    local cmd_whatweb="whatweb ${base_url}"
+    local cmd_whatweb="whatweb -v ${base_url}"
     
     if command -v whatweb >/dev/null 2>&1; then
         imprimir_comando "$cmd_whatweb"
-        whatweb "${base_url}" | tee "${web_dir}/whatweb.txt" || echo -e "${C_RED}[!] Error whatweb${C_RST}"
+        whatweb -v "${base_url}" | tee "${web_dir}/whatweb.txt" || echo -e "${C_RED}[!] Error whatweb${C_RST}"
     else
         log_info "Whatweb no instalado."
     fi
 
-    # --- Gobuster [CON SELECTOR] ---
-    echo
-    echo "--- Gobuster ---"
-    if command -v gobuster >/dev/null 2>&1; then
-        
-        # Selección de diccionario
-        local default_wl="/usr/share/wordlists/dirb/common.txt"
-        local chosen_wl="${default_wl}"
-
-        echo -e "${C_YEL}[?] Selección de diccionario para Gobuster:${C_RST}"
-        local medium_wl="/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
-        echo -e "    1) Rápido   · common.txt, unas 4 600 palabras (${default_wl})"
-        echo -e "    2) Custom   · ingresar ruta"
-        echo -e "    3) Profundo · directory-list-2.3-medium, unas 220 000 palabras (${medium_wl})"
-        echo -en "${C_YEL}>> Selecciona [1/2/3]: ${C_RST}"
-        read -r wl_option || true
-
-        if [[ "${wl_option:-}" == "3" ]]; then
-            if [[ -f "${medium_wl}" ]]; then
-                chosen_wl="${medium_wl}"
-                echo -e "${C_GRN}[+] Diccionario profundo. Tarda bastante más: úsalo si el rápido no encontró nada.${C_RST}"
-            else
-                echo -e "${C_RED}[!] No existe ${medium_wl}. Uso el rápido.${C_RST}"
-            fi
-        elif [[ "${wl_option:-}" == "2" ]]; then
-            echo -en "${C_YEL}>> Ingresa la ruta completa del diccionario: ${C_RST}"
-            read -r custom_wl || true
-            # Remover comillas
-            custom_wl="${custom_wl%\"}"
-            custom_wl="${custom_wl#\"}"
-            custom_wl="${custom_wl%\'}"
-            custom_wl="${custom_wl#\'}"
-
-            if [[ -f "${custom_wl}" ]]; then
-                chosen_wl="${custom_wl}"
-                echo -e "${C_GRN}[+] Diccionario personalizado validado.${C_RST}"
-            else
-                echo -e "${C_RED}[!] El archivo no existe: ${custom_wl}${C_RST}"
-                echo -e "${C_YEL}[i] Usando diccionario por defecto como fallback.${C_RST}"
-            fi
-        else
-            echo -e "${C_GRN}[+] Usando diccionario por defecto.${C_RST}"
-        fi
-
-        # Hilos de gobuster (pregunta, por defecto 150)
-        local hilos=150
-        echo -e "${C_YEL}[?] Hilos para Gobuster (más hilos = más rápido y más ruido).${C_RST}"
-        echo -e "    Recomendado: 150 en laboratorios por VPN. Si ves timeouts o errores, baja a 50."
-        echo -en "${C_YEL}>> Hilos [150]: ${C_RST}"
-        read -r hilos_in || true
-        if [[ -n "${hilos_in:-}" ]]; then
-            if [[ "${hilos_in}" =~ ^[0-9]+$ ]] && (( hilos_in >= 1 && hilos_in <= 300 )); then
-                hilos="${hilos_in}"
-            else
-                echo -e "${C_RED}[!] Valor inválido (1 a 300). Uso 150.${C_RST}"
-            fi
-        fi
-        echo -e "${C_GRN}[+] Gobuster con ${hilos} hilos.${C_RST}"
-
-        # Comprobar si el diccionario final existe
-        if [[ ! -f "${chosen_wl}" ]]; then
-            echo -e "${C_RED}[!] ERROR CRÍTICO: No se encuentra el diccionario (${chosen_wl}).${C_RST}"
-            log_info "Gobuster saltado: diccionario no encontrado."
-        else
-            local cmd_gobuster="gobuster dir -u ${base_url} -w ${chosen_wl} -x txt,php,zip -s 200,204,301,302,307,401,403 -b '' -t ${hilos} -k --no-error -o ${web_dir}/gobuster.txt"
-            imprimir_comando "$cmd_gobuster"
-            
-            gobuster dir -u "${base_url}" -w "${chosen_wl}" -x txt,php,zip \
-                -s 200,204,301,302,307,401,403 -b "" -t "${hilos}" -k --no-error -o "${web_dir}/gobuster.txt" || true
-            
-            if [[ -f "${web_dir}/gobuster.txt" ]]; then
-                local hits
-                hits=$(grep -c "Status:" "${web_dir}/gobuster.txt" || true)
-                echo -e "${C_GRN}[+] Gobuster finalizado. Hits: ${hits}${C_RST}"
-                
-                log_data "--- Resultados Gobuster (${chosen_wl}) ---"
-                grep "Status:" "${web_dir}/gobuster.txt" >> "${LOG_FILE}" || true
-            fi
-        fi
-    fi
 
     # --- Archivos Sensibles ---
     echo "--- Archivos Sensibles ---"
@@ -737,10 +659,8 @@ enum_web_port() {
             rm -f "${web_dir}/${file}"
         fi
     done
-    # --- Nivel 2: fuzzing dentro de las carpetas que elijas ---
-    if [[ -n "${chosen_wl:-}" && -f "${web_dir}/gobuster.txt" ]]; then
-        gobuster_nivel2 "${base_url}" "${web_dir}" "${chosen_wl}" "${hilos:-150}"
-    fi
+    # --- Fuzzing web: comando listo (no se corre aqui, se copia) ---
+    fuzzing_comando "${base_url}" "${web_dir}"
     nikto_web "${base_url}" "${web_dir}"
     echo -e "${C_GRN}[OK] Resultados en: ${web_dir}${C_RST}"
 }
@@ -851,91 +771,38 @@ nikto_web() {
     log_info "Nikto pendiente (no ejecutado): ${cmd}"
 }
 
-# --- [4B] Gobuster nivel 2 (recursivo controlado) ---
-candidatos_nivel2() {
-    # Imprime rutas candidatas a carpeta, una por línea, sin repetir:
-    #  - de gobuster: 301/302 (redirige a carpeta) o 200/401/403 sin extensión
-    #  - de robots.txt: rutas en Disallow
-    local web_dir="$1"
-    {
-        grep -E "Status: (301|302|200|401|403)" "${web_dir}/gobuster.txt" 2>/dev/null \
-            | awk '{print $1}' | grep -vE '\.[A-Za-z0-9]{1,5}$' || true
-        if [[ -s "${web_dir}/robots.txt" ]]; then
-            grep -i '^Disallow:' "${web_dir}/robots.txt" | awk '{print $2}' \
-                | sed -E 's#\?.*$##; s#/$##' | grep -E '^/[^*]+$' | grep -vE '\.[A-Za-z0-9]{1,5}$' || true
-        fi
-    } | sed -E 's#/$##' | grep -vE '^/?$' | sort -u
-}
-
-gobuster_nivel2() {
-    local base_url="$1" web_dir="$2" wl="$3" hilos="$4"
-    local -a cand=()
-    mapfile -t cand < <(candidatos_nivel2 "${web_dir}")
-    [[ ${#cand[@]} -gt 0 ]] || { echo -e "${C_YEL}[i] No hay carpetas candidatas para un segundo nivel.${C_RST}"; return 0; }
-
+# --- [4B] Fuzzing web: comando listo para ejecutar a mano ---
+fuzzing_comando() {
+    local base_url="$1" web_dir="$2"
     echo
-    echo -e "${C_BLU}[*] FASE 4B: Fuzzing de segundo nivel (dentro de carpetas)${C_RST}"
-    explicar "Enumeración recursiva controlada" \
-        "Vuelve a correr gobuster, pero dentro de las carpetas que tú elijas." \
-        "Lo interesante suele estar más adentro: /admin/backup, /dev/notes. Elegir a mano evita gastar tiempo en carpetas inútiles como /images o /css." \
-        "Rutas nuevas dentro de cada carpeta. Solo se baja un nivel más: si quieres ir más profundo, hazlo a mano con criterio."
-    echo -e "${C_CYN}  Candidatas (de gobuster y de robots.txt):${C_RST}"
-    local i
-    for i in "${!cand[@]}"; do
-        printf "    %2d) %s\n" "$((i+1))" "${cand[$i]}"
-    done
-    echo -e "${C_CYN}  Pista: prioriza nombres como admin, dev, backup, uploads, config, api, private.${C_RST}"
-    echo -en "${C_YEL}>> Números separados por coma, 't' para todas, Enter para ninguna: ${C_RST}"
-    local sel
-    read -r sel || true
-    sel="${sel// /}"
-    [[ -z "${sel}" ]] && { echo -e "${C_GRN}[+] Sin segundo nivel.${C_RST}"; return 0; }
-
-    local -a elegidas=()
-    if [[ "${sel,,}" == "t" ]]; then
-        elegidas=("${cand[@]}")
-    else
-        local n
-        IFS=',' read -r -a nums <<< "${sel}"
-        for n in "${nums[@]}"; do
-            if [[ "${n}" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= ${#cand[@]} )); then
-                elegidas+=("${cand[$((n-1))]}")
-            else
-                echo -e "${C_RED}[!] '${n}' no es una opción válida. Se omite.${C_RST}"
-            fi
-        done
-    fi
-    [[ ${#elegidas[@]} -gt 0 ]] || return 0
-
-    echo -e "${C_YEL}[?] ¿Mismo diccionario y ${hilos} hilos para el segundo nivel?${C_RST}"
-    if ! ask_yes_no "Usar la misma configuración"; then
-        echo -en "${C_YEL}>> Ruta del diccionario [${wl}]: ${C_RST}"
-        local wl_in; read -r wl_in || true
-        if [[ -n "${wl_in:-}" ]]; then
-            if [[ -f "${wl_in}" ]]; then wl="${wl_in}"; else echo -e "${C_RED}[!] No existe. Uso ${wl}.${C_RST}"; fi
-        fi
-        echo -en "${C_YEL}>> Hilos [${hilos}]: ${C_RST}"
-        local h_in; read -r h_in || true
-        if [[ -n "${h_in:-}" ]]; then
-            if [[ "${h_in}" =~ ^[0-9]+$ ]] && (( h_in >= 1 && h_in <= 300 )); then hilos="${h_in}"; else echo -e "${C_RED}[!] Inválido. Uso ${hilos}.${C_RST}"; fi
-        fi
-    fi
-
-    local ruta nombre out hits
-    for ruta in "${elegidas[@]}"; do
-        nombre=$(echo "${ruta}" | tr '/' '_' | sed 's/^_//')
-        out="${web_dir}/gobuster_nivel2_${nombre}.txt"
-        echo
-        echo -e "${C_BLU}[*] Nivel 2 en ${base_url}${ruta}/${C_RST}"
-        imprimir_comando "gobuster dir -u ${base_url}${ruta}/ -w ${wl} -x txt,php,zip,bak -s 200,204,301,302,307,401,403 -b '' -t ${hilos} -k --no-error -o ${out}"
-        gobuster dir -u "${base_url}${ruta}/" -w "${wl}" -x txt,php,zip,bak \
-            -s 200,204,301,302,307,401,403 -b "" -t "${hilos}" -k --no-error -o "${out}" || true
-        hits=$(grep -c "Status:" "${out}" 2>/dev/null || true)
-        echo -e "${C_GRN}[+] ${ruta}/: ${hits:-0} rutas encontradas. Guardado en ${out}${C_RST}"
-        log_data "--- Gobuster nivel 2: ${ruta}/ ---"
-        grep "Status:" "${out}" 2>/dev/null | sed "s#^#${ruta}#" >> "${LOG_FILE}" || true
-    done
-    echo -e "${C_CYN}[i] Fin del nivel 2. No se baja más automáticamente: revisa lo encontrado y decide a mano.${C_RST}"
+    echo -e "${C_BLU}[*] FASE 4B: Fuzzing web (comando listo, se corre a mano)${C_RST}"
+    usar_termino FUZZING
+    explicar "Fuerza de directorios (fuzzing)" \
+        "Prueba miles de rutas de un diccionario contra la web para descubrir paginas y carpetas que no estan enlazadas." \
+        "No se corre aqui a proposito: es el paso que mas tarda. Asi ves los puertos y el resto del recon sin esperar. Copia el comando y lanzalo en otra terminal mientras sigues." \
+        "Codigos 200 (existe), 301/302 (carpeta), 401/403 (protegido). Prioriza admin, login, backup, dev, config. Si una carpeta sale interesante, haz un segundo nivel dentro de ella (a mano, max 2 niveles)."
+    local out pend cmd rec
+    mkdir -p "${web_dir}"
+    out="$(realpath -m "${web_dir}")/gobuster.txt"
+    pend="${MACHINE_DIR}/comandos_pendientes.txt"
+    command -v gobuster >/dev/null 2>&1 || echo -e "${C_YEL}[i] gobuster no esta instalado: sudo apt install gobuster${C_RST}"
+    cmd="gobuster dir -u ${base_url} -w /usr/share/wordlists/dirb/common.txt -x php,txt,html -t 150 -k --no-error -o ${out}"
+    rec="gobuster dir -u ${base_url}/CARPETA/ -w /usr/share/wordlists/dirb/common.txt -x php,txt,html,bak -t 150 -k --no-error -o $(realpath -m "${web_dir}")/gobuster_CARPETA.txt"
+    echo -e "${C_GRN}[+] Comando de fuzzing (copialo en otra terminal):${C_RST}"
+    echo -e "      ${C_CYN}${cmd}${C_RST}"
+    echo -e "${C_CYN}    Muestra en vivo cada ruta que encuentra. Si quieres ver cada intento, agrega -v (ruidoso).${C_RST}"
+    echo -e "${C_CYN}    Si el rapido no da nada, usa un diccionario mas profundo:${C_RST}"
+    echo -e "      ${C_CYN}/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt${C_RST}"
+    echo -e "${C_GRN}[+] Si una carpeta sale interesante, segundo nivel (reemplaza CARPETA):${C_RST}"
+    echo -e "      ${C_CYN}${rec}${C_RST}"
+    {
+        echo "# Fuzzing web ${base_url} ($(date '+%F %H:%M'))"
+        echo "${cmd}"
+        echo "# Segundo nivel si hay carpeta interesante (reemplaza CARPETA):"
+        echo "${rec}"
+    } >> "${pend}"
+    echo -e "${C_GRN}[+] Guardado en ${pend} y quedara en el reporte .md${C_RST}"
+    log_info "Fuzzing pendiente (no ejecutado): ${cmd}"
 }
 
 # --- [5] Funciones extra de reconocimiento ---
@@ -1147,12 +1014,28 @@ EOF
 
     cat >> "${notas_file}" <<EOF
 
-## 2. Enumeración Web (Resumen Automático)
+## 2. Enumeración Web
 EOF
 
-    # Extraer Web
+    # Extraer Web (whatweb, robots, sensibles)
     if [[ -f "${LOG_FILE}" ]]; then
-        grep -E "^=== ENUMWEB|^--- Resultados Gobuster|^/|Sensible encontrado" "${LOG_FILE}" >> "${notas_file}" || echo "Sin actividad web relevante." >> "${notas_file}"
+        grep -E "^=== ENUMWEB|Sensible encontrado|WordPress|whatweb" "${LOG_FILE}" >> "${notas_file}" 2>/dev/null || echo "Sin actividad web relevante." >> "${notas_file}"
+    fi
+
+    # Comandos de fuzzing/nikto para correr a mano
+    {
+        echo ""
+        echo "### Comandos para ejecutar a mano (fuzzing / nikto)"
+        echo "Corre estos en otra terminal. Los puertos ya estan arriba: no hay que esperar al fuzzing."
+    } >> "${notas_file}"
+    if [[ -f "${MACHINE_DIR}/comandos_pendientes.txt" ]]; then
+        {
+            echo '```bash'
+            cat "${MACHINE_DIR}/comandos_pendientes.txt"
+            echo '```'
+        } >> "${notas_file}"
+    else
+        echo "_No se registraron comandos manuales._" >> "${notas_file}"
     fi
 
     cat >> "${notas_file}" <<EOF
